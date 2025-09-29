@@ -61,47 +61,5 @@ void
 memdump(char *fmt, char *data)
 {
   // Your code here.
-  unsigned char *d = (unsigned char *)data;
 
-  for (char *f = fmt; *f; f++) {
-    switch (*f) {
-    case 'i': {               // 4-byte integer
-      int v = *(int *)d;
-      printf("%d\n", v);
-      d += 4;
-      break;
-    }
-    case 'p': {               // 8-byte integer in hex
-      uint64 v = *(uint64 *)d;
-      printf("%lx\n", (unsigned long)v);
-      d += 8;
-      break;
-    }
-    case 'h': {               // 2-byte short
-      short v = *(short *)d;
-      printf("%d\n", v);
-      d += 2;
-      break;
-    }
-    case 'c': {               // 1-byte character
-      char ch = *(char *)d;
-      printf("%c\n", ch);
-      d += 1;
-      break;
-    }
-    case 's': {               // next 8 bytes = pointer to string
-      char *ptr = *(char **)d;
-      printf("%s\n", ptr);
-      d += 8;
-      break;
-    }
-    case 'S': {               // rest of data is a null-terminated string
-      printf("%s\n", (char *)d);
-      return;
-    }
-    default:
-      printf("memdump: unknown format '%c'\n", *f);
-      return;
-}
-}
 }
