@@ -197,13 +197,15 @@ UPROGS=\
 	$U/_dorphan\
 	$U/_sleep\
 	$U/_sixfive\
-	$U/_memdump
-
+	$U/_memdump\
+	$U/_sandbox\
+	$U/_secret
 
 ifeq ($(LAB),syscall)
 UPROGS += \
-	$U/_attack\
-	$U/_secret
+	$U/_sandbox\
+	$U/_secret\
+	$U/_attack
 endif
 
 ifeq ($(LAB),lock)
@@ -281,7 +283,7 @@ endif
 
 
 fs.img: mkfs/mkfs README $(UEXTRA) $(UPROGS)
-	mkfs/mkfs fs.img README $(UEXTRA) $(UPROGS)
+	mkfs/mkfs fs.img README user/exec.sh $(UEXTRA) $(UPROGS)
 
 newfs.img: 
 	-mv -f fs.img fs.img.bk
@@ -397,3 +399,4 @@ check-qemu-version:
 		echo "ERROR: Need qemu version >= $(MIN_QEMU_VERSION)"; \
 		exit 1; \
 	fi
+FS += exec.sh

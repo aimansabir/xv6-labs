@@ -11,6 +11,7 @@
 #include "stat.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "syscall.h"
 #include "fs.h"
 #include "sleeplock.h"
 #include "file.h"
@@ -34,7 +35,7 @@ argfd(int n, int *pfd, struct file **pf)
   return 0;
 }
 
-// Allocate a file descriptor for the given file.
+// Alloca'te a file descriptor for the given file.
 // Takes over file reference from caller on success.
 static int
 fdalloc(struct file *f)
@@ -313,6 +314,13 @@ sys_open(void)
   argint(1, &omode);
   if((n = argstr(0, path, MAXPATH)) < 0)
     return -1;
+  // --- SANDBOX: allow open only if path matches when masked ---
+  struct proc *p = myproc();
+  if (((p->sysmask >> SYS_open) & 1ULL) &&
+      strncmp(path, p->allowed_path, MAXPATH) != 0) {
+    return -1;
+  }
+  // --- SANDBOX END ---
 
   begin_op();
 
@@ -442,6 +450,14 @@ sys_exec(void)
   if(argstr(0, path, MAXPATH) < 0) {
     return -1;
   }
+  // --- SANDBOX: allow exec only if path matches when masked ---
+  struct proc *p = myproc();
+  if (((p->sysmask >> SYS_exec) & 1ULL) &&
+      strncmp(path, p->allowed_path, MAXPATH) != 0) {
+    return -1;
+  }
+  // --- SANDBOX END ---
+
   memset(argv, 0, sizeof(argv));
   for(i=0;; i++){
     if(i >= NELEM(argv)){

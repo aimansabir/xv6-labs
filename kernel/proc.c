@@ -124,6 +124,10 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->sysmask = 0;
+
+  p->sysmask = 0;
+  p->allowed_path[0] = 0;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -278,6 +282,8 @@ kfork(void)
 
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
+  np->sysmask = p->sysmask;
+  safestrcpy(np->allowed_path, p->allowed_path, MAXPATH);
 
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
@@ -289,7 +295,7 @@ kfork(void)
 
   pid = np->pid;
 
-  release(&np->lock);
+release(&np->lock);
 
   acquire(&wait_lock);
   np->parent = p;

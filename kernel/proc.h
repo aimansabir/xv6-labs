@@ -84,6 +84,8 @@ enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 // Per-process state
 struct proc {
   struct spinlock lock;
+  uint64 sysmask;   // sandbox: bit i rejects syscall i
+  char allowed_path[MAXPATH];   // sandbox: only-open/exec if path matches
 
   // p->lock must be held when using these:
   enum procstate state;        // Process state
