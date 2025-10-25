@@ -1,0 +1,30 @@
+Lab: Page Tables — Task 3 Answers
+
+For every leaf page in vmprint:
+
+1) Low VA leaves (e.g., 0x...0000, 0x...1000, ...)
+   - What: user text/data/heap/stack.
+   - Typical perms:
+       * 0x5B = V|R|X|U|A   (user text: read+exec, no write)
+       * 0x17 = V|R|W|U     (user data/stack: read+write, no exec)
+   - Relation to print_pgtbl: matches the early “va 0x0 …” entries and neighbors.
+
+2) USYSCALL at VA = TRAPFRAME - PGSIZE (e.g., 0x3fffffd000)
+   - What: per-process read-only page with struct usyscall { int pid; }.
+   - Perms: 0x13 = V|R|U (no W, no X).
+   - Relation: the “va 0x3fffffd000 … perm 0x13” line in print_pgtbl.
+
+3) TRAPFRAME at 0x3fffffe000
+   - What: kernel trapframe (register save area used by trap/trampoline).
+   - Perms: 0xC7 = V|R|W|A|D (no U, no X).
+   - Relation: “va 0x3fffffe000 … perm 0xC7”.
+
+4) TRAMPOLINE at 0x3ffffff000
+   - What: trampoline.S (enter/exit kernel).
+   - Perms: 0x4B = V|R|X|A (no U).
+   - Relation: “va 0x3ffffff000 … perm 0x4B”.
+
+How vmprint relates to print_pgtbl:
+- vmprint shows the Sv39 tree (with “ ..” indentation) and prints every valid PTE.
+- print_pgtbl is a flat sample of leaf mappings.
+- Each vmprint leaf (has any of R/W/X) corresponds 1:1 to a leaf line in print_pgtbl (same VA & effective perms).
