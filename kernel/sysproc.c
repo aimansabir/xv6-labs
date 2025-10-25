@@ -105,3 +105,22 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_interpose(void)
+{
+  int mask;
+  char path[MAXPATH];
+  struct proc *p = myproc();
+
+  // In your tree argint returns void—calling it is fine.
+  argint(0, &mask);
+
+  if (argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  p->sysmask = (uint64)(uint32)mask;
+  safestrcpy(p->allowed_path, path, MAXPATH);  // <-- don't ignore it
+  return 0;
+}
+
