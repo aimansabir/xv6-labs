@@ -1,0 +1,38 @@
+Q: Which other xv6 system call(s) could be made faster using this shared page? Explain how.
+
+1) uptime()
+
+   - Put a read-only copy of the global tick counter into the shared page.
+
+   - Add a field in struct usyscall, e.g., `volatile uint ticks;`.
+
+   - Kernel updates this once per timer interrupt (where xv6 already increments ticks).
+
+   - Userspace reads USYSCALL->ticks directly (no trap to kernel).
+
+
+
+2) getppid()
+
+   - Add `int ppid;` to struct usyscall.
+
+   - Set `ppid` for the child in fork() and update on reparenting.
+
+   - Userspace reads USYSCALL->ppid directly.
+
+
+
+3) (If present later) getuid()/getgid()
+
+   - Mirror credentials in read-only fields (uid/gid) in struct usyscall.
+
+   - Kernel updates on set* calls; userspace reads directly.
+
+
+
+Notes:
+
+- Only “pure read” queries are good candidates. Anything that changes state or needs synchronization (e.g., sbrk, sleep, wait, write) still requires a system call.
+
+- The shared page must be mapped user-readable only (PTE_R | PTE_U), never writable or executable. The kernel owns the backing page and updates it.
+
