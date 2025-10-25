@@ -1,0 +1,48 @@
+Task 1 — Inspect a user-process page table
+
+What each column means
+- va: virtual address (start of 4KB page)
+- pte: raw 64-bit PTE (includes physical page number + flags)
+- pa: physical page address = PTE2PA(pte)
+- perm: PTE flags bitmask (RISC-V Sv39): 
+  V=0x001, R=0x002, W=0x004, X=0x008, U=0x010, G=0x020, A=0x040, D=0x080
+
+Decoding my run (selected lines)
+
+1) va 0x0  perm 0x5B  -> flags = V(1) R(2) X(8) U(16) A(64)
+   - Meaning: valid, user, readable, executable; hardware 'accessed' set.
+   - Likely segment: user text (code).
+
+2) va 0x1000  perm 0x5B -> V,R,X,U,A
+   - Another user text page.
+
+3) va 0x2000  perm 0x17 -> V(1) R(2) W(4) U(16)
+   - Meaning: valid, user, read/write (not exec).
+   - Likely segment: user data / heap.
+
+4) va 0x3000  perm 0x7  -> V(1) R(2) W(4)
+   - Meaning: valid, read/write, but no U bit.
+   - User cannot access (no U). This can appear for special mappings or metadata; the user-facing data/heap pages are those with U set.
+
+5) va 0x4000  perm 0xD7 -> V,R,W,U,A,D (0xD7 = 0x80 D + 0x40 A + 0x10 U + 0x04 W + 0x02 R + 0x01 V)
+   - Meaning: user R/W; accessed+dirty set by hardware after use.
+   - Likely: hot data page recently written.
+
+6) va 0x5000..0x9000  perm 0x0
+   - Unmapped holes (PTE_V=0). Touching these would fault.
+
+High mappings near the top of VA space
+
+7) va 0x3FFFFFE000  perm 0xC7 -> V,R,W,A,D (no U, no X)
+   - This is the TRAPFRAME page (kernel-only R/W just below the trampoline).
+   - User cannot access it (no U).
+
+8) va 0x3FFFFFF000  perm 0x4B -> V,R,X,A (no U)
+   - This is the TRAMPOLINE page at top of user VA.
+   - Execute+read in S-mode; not user-accessible (no U).
+
+Layout recap
+- Low addresses: user text (R|X|U), then user data/heap/stack (R|W|U).
+- Very top: TRAPFRAME (R|W, no U), then TRAMPOLINE (R|X, no U).
+- Holes show up as invalid (perm 0x0).
+
