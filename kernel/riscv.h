@@ -359,6 +359,11 @@ typedef uint64 *pagetable_t; // 512 PTEs
 
 #define PGSIZE 4096 // bytes per page
 #define PGSHIFT 12  // bits of offset within a page
+#define MEGAPGSHIFT 21
+#define MEGAPGSIZE (1L<<MEGAPGSHIFT)
+#define MEGAPGMASK (MEGAPGSIZE-1)
+#define IS_MEGA_ALIGNED(x) ((((uint64)(x)) & MEGAPGMASK)==0)
+#define N_PTE_PER_MEGA (MEGAPGSIZE/PGSIZE)
 
 #ifdef LAB_PGTBL
 #define SUPERPGSIZE (2 * (1 << 20)) // bytes per page

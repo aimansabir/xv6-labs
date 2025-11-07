@@ -66,6 +66,9 @@ void            ireclaim(int);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+// superpage allocator (2MB)
+void* superalloc(void);
+void  superfree(void *pa);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -241,3 +244,7 @@ void            netinit(void);
 void            net_rx(char *buf, int len);
 
 #endif
+
+// superpage helpers (prototypes)
+int mappages_super(pagetable_t, uint64 va, uint64 size, uint64 pa, int perm);
+

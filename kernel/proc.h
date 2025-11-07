@@ -86,6 +86,7 @@ struct proc {
   struct spinlock lock;
 
   // p->lock must be held when using these:
+  void *usyscall;          // kernel VA of per-process USYSCALL page
   enum procstate state;        // Process state
   void *chan;                  // If non-zero, sleeping on chan
   int killed;                  // If non-zero, have been killed

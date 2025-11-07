@@ -9,10 +9,90 @@
 #include "riscv.h"
 #include "defs.h"
 
-void freerange(void *pa_start, void *pa_end);
+// --- Superpage (2MB) allocator ---------------------------------------------
+#ifndef N_SUPER
+#define N_SUPER 8                                   // reserve a handful
+#endif
 
-extern char end[]; // first address after kernel.
-                   // defined by kernel.ld.
+struct {
+  struct spinlock lock;
+  void *base[N_SUPER];   // KVA bases of reserved 2MB chunks
+  char  free[N_SUPER];   // 1 = free, 0 = used
+  int   n;               // how many reserved
+} kmemsuper;
+
+static void
+superinit(void)
+{
+  initlock(&kmemsuper.lock, "kmemsuper");
+  kmemsuper.n = 0;
+  for (int i = 0; i < N_SUPER; i++) kmemsuper.free[i] = 0;
+}
+
+void*
+superalloc(void)
+{
+  acquire(&kmemsuper.lock);
+  for (int i = 0; i < kmemsuper.n; i++) {
+    if (kmemsuper.free[i]) {
+      kmemsuper.free[i] = 0;
+      void *p = kmemsuper.base[i];
+      release(&kmemsuper.lock);
+      return p;
+    }
+  }
+  release(&kmemsuper.lock);
+  return 0;
+}
+
+void
+superfree(void *pa)
+{
+  if (pa == 0 || !IS_MEGA_ALIGNED(pa))
+    panic("superfree: bad addr");
+
+  acquire(&kmemsuper.lock);
+  int found = 0;
+  for (int i = 0; i < kmemsuper.n; i++) {
+    if (kmemsuper.base[i] == pa) {
+      if (kmemsuper.free[i])
+        panic("superfree: double free");
+      kmemsuper.free[i] = 1;
+      found = 1;
+      break;
+    }
+  }
+  release(&kmemsuper.lock);
+  if (!found)
+    panic("superfree: unknown chunk");
+}
+
+// Forward decls for functions used below
+void freerange(void *pa_start, void *pa_end);
+extern char end[]; // first address after kernel. defined by kernel.ld.
+void kfree(void *pa);
+
+// One-time reservation of 2MB chunks from [pa_start, pa_end),
+// skipping them from the 4KB freelist.
+static void
+reserve_super_spans(void *pa_start, void *pa_end)
+{
+  char *p = (char*)PGROUNDUP((uint64)pa_start);
+  char *lim = (char*)pa_end;
+  for (; p + PGSIZE <= lim; ) {
+    if (kmemsuper.n < N_SUPER && IS_MEGA_ALIGNED(p) && p + MEGAPGSIZE <= lim) {
+      kmemsuper.base[kmemsuper.n] = p;
+      kmemsuper.free[kmemsuper.n] = 1;
+      kmemsuper.n++;
+      p += MEGAPGSIZE;
+    } else {
+      kfree(p);            // feed one 4KB page into the normal freelist
+      p += PGSIZE;
+    }
+  }
+}
+
+// --- Canonical xv6 4KB allocator -------------------------------------------
 
 struct run {
   struct run *next;
@@ -24,10 +104,12 @@ struct {
 } kmem;
 
 void
-kinit()
+kinit(void)
 {
   initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+  // superpages: reserve a handful of 2MB chunks, and feed the rest to 4KB freelist.
+  superinit();
+  reserve_super_spans(end, (void*)PHYSTOP);
 }
 
 void
@@ -40,9 +122,8 @@ freerange(void *pa_start, void *pa_end)
 }
 
 // Free the page of physical memory pointed at by pa,
-// which normally should have been returned by a
-// call to kalloc().  (The exception is when
-// initializing the allocator; see kinit above.)
+// which normally should have been returned by a call to kalloc().
+// (The exception is when initializing the allocator; see kinit above.)
 void
 kfree(void *pa)
 {

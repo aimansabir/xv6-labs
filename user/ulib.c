@@ -1,3 +1,4 @@
+#include "kernel/memlayout.h"
 #include "kernel/types.h"
 #include "kernel/stat.h"
 #include "kernel/fcntl.h"
@@ -159,3 +160,9 @@ sbrklazy(int n) {
   return sys_sbrk(n, SBRK_LAZY);
 }
 
+int
+ugetpid(void)
+{
+  volatile struct usyscall *u = (volatile struct usyscall *)USYSCALL;
+  return u->pid;
+}

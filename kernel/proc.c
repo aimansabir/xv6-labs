@@ -5,6 +5,17 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "vm.h"
+
+static void
+write_usys_pid(struct proc *p)
+{
+  if(p->usyscall){
+    struct usyscall *u = (struct usyscall *)p->usyscall;
+    u->pid = p->pid;
+  }
+}
+
 
 struct cpu cpus[NCPU];
 
@@ -132,7 +143,17 @@ found:
     return 0;
   }
 
-  // An empty user page table.
+  // Allocate per-process USYSCALL page (kernel VA), and initialize it.
+  p->usyscall = kalloc();
+  if(p->usyscall == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  memset(p->usyscall, 0, PGSIZE);
+  write_usys_pid(p);     // writes ((struct usyscall*)p->usyscall)->pid = p->pid
+
+  // An empty user page table + wire trampoline/trapframe/USYSCALL.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
     freeproc(p);
@@ -140,8 +161,7 @@ found:
     return 0;
   }
 
-  // Set up new context to start executing at forkret,
-  // which returns to user space.
+  // Set up new context to start executing at forkret, which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
@@ -158,9 +178,17 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+
+  // FREE the per-process USYSCALL page (kernel-allocated page).
+  if(p->usyscall){
+    kfree(p->usyscall);
+    p->usyscall = 0;
+  }
+
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -183,6 +211,12 @@ proc_pagetable(struct proc *p)
   if(pagetable == 0)
     return 0;
 
+    // Map per-process USYSCALL (user-readable, not writable/executable).
+  if(mappages(pagetable, USYSCALL, PGSIZE, ((uint64)p->usyscall), PTE_R | PTE_U) < 0){
+    uvmfree(pagetable, 0);
+    return 0;
+  }
+
   // map the trampoline code (for system call return)
   // at the highest user virtual address.
   // only the supervisor uses it, on the way
@@ -198,6 +232,7 @@ proc_pagetable(struct proc *p)
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
               (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+    uvmunmap(pagetable, USYSCALL, 1, 0);
     uvmfree(pagetable, 0);
     return 0;
   }
@@ -211,6 +246,7 @@ void
 proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+  uvmunmap(pagetable, USYSCALL, 1, 0);   
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
 }
@@ -236,20 +272,65 @@ userinit(void)
 int
 growproc(int n)
 {
-  uint64 sz;
   struct proc *p = myproc();
+  uint64 oldsz = p->sz;
 
-  sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
-      return -1;
+    uint64 newsz = oldsz + n;
+    int perm = PTE_R | PTE_W | PTE_U;
+
+    // Head: map up to next 2MB boundary with 4KB pages.
+    uint64 first_aligned = (oldsz + MEGAPGSIZE - 1) & ~(MEGAPGSIZE - 1);
+    if(first_aligned > newsz)
+      first_aligned = newsz;
+    if(first_aligned > oldsz){
+      if(uvmalloc(p->pagetable, oldsz, first_aligned, perm) == 0)
+        return -1;
     }
+
+    // Middle: map aligned 2MB chunks with L1 leaf PTEs.
+    uint64 mid_start = first_aligned;
+    uint64 mid_end   = newsz & ~(MEGAPGSIZE - 1);
+    for(uint64 va = mid_start; va + MEGAPGSIZE <= mid_end; va += MEGAPGSIZE){
+      void *pa2m = superalloc();
+      if(pa2m == 0){
+        // fallback: fill this 2MB with 4KB pages
+        if(uvmalloc(p->pagetable, va, va + MEGAPGSIZE, perm) == 0)
+          return -1;
+        continue;
+      }
+      memset(pa2m, 0, MEGAPGSIZE);
+      if(mappages_super(p->pagetable, va, MEGAPGSIZE, (uint64)pa2m, perm) < 0){
+        superfree(pa2m);
+        return -1;
+      }
+    }
+
+    // Tail: whatever remains after the last aligned 2MB.
+    uint64 tail_start = mid_end;
+    if(tail_start < first_aligned)    // <-- prevent overlap with head
+      tail_start = first_aligned;
+    if(tail_start < newsz){
+      if(uvmalloc(p->pagetable, tail_start, newsz, perm) == 0)
+        return -1;
+    }
+
+    p->sz = newsz;
+    return 0;
+
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    uint64 newsz = oldsz + n;
+    if(newsz > oldsz)
+      return -1;
+    p->sz = uvmdealloc(p->pagetable, oldsz, newsz);
+    return 0;
   }
-  p->sz = sz;
+
   return 0;
 }
+
+
+
 
 // Create a new process, copying the parent.
 // Sets up child kernel stack to return as if from fork() system call.
