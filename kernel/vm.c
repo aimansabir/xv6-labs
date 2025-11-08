@@ -18,6 +18,21 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 extern char trampoline[]; // trampoline.S
 
 // Make a direct-map page table for the kernel.
+/*
+ * create a direct-map page table for the kernel.
+ */
+/*
+ * create a direct-map page table for the kernel.
+ */
+/*
+ * create a direct-map page table for the kernel.
+ */
+/*
+ * create a direct-map page table for the kernel.
+ */
+/*
+ * create a direct-map page table for the kernel.
+ */
 pagetable_t
 kvmmake(void)
 {
@@ -38,19 +53,43 @@ kvmmake(void)
 
   // pci.c maps the e1000's registers here.
   kvmmap(kpgtbl, 0x40000000L, 0x40000000L, 0x20000, PTE_R | PTE_W);
-#endif  
+#endif 
 
-  // PLIC
-  kvmmap(kpgtbl, PLIC, PLIC, 0x4000000, PTE_R | PTE_W);
+  // --- SUPERPAGE MODIFICATION ---
 
-  // map kernel text executable and read-only.
+  // PLIC (map 64MB with 2MB superpages)
+  // 0x4000000 is 64MB, or 32 * 2MB pages
+  for(uint64 pa = PLIC; pa < PLIC + 0x4000000; pa += MEGAPGSIZE) {
+    mappages_super(kpgtbl, pa, MEGAPGSIZE, pa, PTE_R | PTE_W);
+  }
+
+  // map kernel text executable and read-only (4KB pages)
   kvmmap(kpgtbl, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
 
   // map kernel data and the physical RAM we'll make use of.
-  kvmmap(kpgtbl, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  
+  // Find the 2MB boundary *after* etext.
+  uint64 pa_2m_boundary = (PGROUNDUP((uint64)etext) + MEGAPGSIZE - 1) & ~(MEGAPGSIZE - 1);
+  
+  // 1. Map 4KB pages from etext up to that 2MB boundary.
+  uint64 size = pa_2m_boundary - (uint64)etext;
+  if(size > 0)
+    kvmmap(kpgtbl, (uint64)etext, (uint64)etext, size, PTE_R | PTE_W);
 
-  // map the trampoline for trap entry/exit to
-  // the highest virtual address in the kernel.
+  // 2. Map 2MB superpages starting from the boundary
+  uint64 pa = pa_2m_boundary;
+  for(; pa + MEGAPGSIZE <= PHYSTOP; pa += MEGAPGSIZE) {
+    mappages_super(kpgtbl, pa, MEGAPGSIZE, pa, PTE_R | PTE_W);
+  }
+  
+  // 3. map remaining 4KB pages
+  size = PHYSTOP - pa;
+  if(size > 0)
+    kvmmap(kpgtbl, pa, pa, size, PTE_R | PTE_W);
+  
+  // --- END SUPERPAGE MODIFICATION ---
+
+  // map the trampoline for trap entry/exit
   kvmmap(kpgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 
   // allocate and map a kernel stack for each process.
@@ -58,7 +97,6 @@ kvmmake(void)
   
   return kpgtbl;
 }
-
 // Initialize the kernel_pagetable, shared by all CPUs.
 void
 kvminit(void)
@@ -129,22 +167,93 @@ walkaddr(pagetable_t pagetable, uint64 va)
   if(va >= MAXVA)
     return 0;
 
-  pte = walk(pagetable, va, 0);
-  if(pte == 0)
-    return 0;
+  // Manually walk the 3-level page table.
+  
+  // L2
+  pte = &pagetable[PX(2, va)];
   if((*pte & PTE_V) == 0)
     return 0;
-  if((*pte & PTE_U) == 0)
+  // NO PTE_U check at L2
+  if(PTE_LEAF(*pte)) {
+    // L2 leaf (1G page) - not used in this lab
+    // pa = PTE2PA(*pte);
+    // return pa + (va & (GIGAPGSIZE - 1));
+    panic("walkaddr: 1G page not supported");
+  }
+  pagetable = (pagetable_t)PTE2PA(*pte);
+
+  // L1
+  pte = &pagetable[PX(1, va)];
+  if((*pte & PTE_V) == 0)
     return 0;
+  // NO PTE_U check at L1
+  if(PTE_LEAF(*pte)) {
+    // L1 leaf (2M superpage)
+    if((*pte & PTE_U) == 0) // Check PTE_U at leaf
+      return 0;
+    pa = PTE2PA(*pte);
+    return pa + (va & (MEGAPGSIZE - 1)); // Add offset
+  }
+  pagetable = (pagetable_t)PTE2PA(*pte);
+
+  // L0
+  pte = &pagetable[PX(0, va)];
+  if((*pte & PTE_V) == 0)
+    return 0;
+  if((*pte & PTE_U) == 0) // Check PTE_U at leaf
+    return 0;
+  
+  // L0 leaf (4K page)
   pa = PTE2PA(*pte);
-  return pa;
+  return pa + (va & (PGSIZE - 1)); // Add offset
+}
+  
+#if defined(LAB_PGTBL) || defined(SOL_MMAP) || defined(SOL_COW)
+// Recursive helper function for vmprint
+// Print a page table (3-level Sv39), in the format the lab expects.
+// Recursive helper for vmprint.
+static void
+vmprint_walk(pagetable_t pagetable, int level, uint64 va_base)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) == 0) // Skip invalid PTEs
+      continue;
+
+    uint64 pa = PTE2PA(pte);
+    
+    // Compute the full VA for this entry.
+    // L2 (level=2) shift is 30 (12 + 9*2).
+    // L1 (level=1) shift is 21 (12 + 9*1).
+    // L0 (level=0) shift is 12 (12 + 9*0).
+    uint64 shift = 12 + 9*level;
+    uint64 va = va_base | ((uint64)i << shift);
+
+    // Indentation: 1 for L2, 2 for L1, 3 for L0.
+    for (int d = 0; d < 3 - level; d++)
+      printf(" ..");
+
+    // Print the VA, PTE, and PA.
+    // Must cast to (void *) for %p format specifier.
+    printf("%p: pte 0x%p pa 0x%p\n", (void *)va, (void *)pte, (void *)pa);
+
+    // If this PTE points to a lower-level page table (not a leaf):
+    if ((pte & (PTE_R|PTE_W|PTE_X)) == 0) {
+      // Recurse down to the next level (level-1).
+      vmprint_walk((pagetable_t)pa, level-1, va);
+    }
+    // Otherwise, it's a leaf (4K or 2M), so we stop recursing.
+  }
 }
 
-
-#if defined(LAB_PGTBL) || defined(SOL_MMAP) || defined(SOL_COW)
+// Print the page table.
 void
-vmprint(pagetable_t pagetable) {
-  // your code here
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", (void *)pagetable);
+  // Start the walk at the top level (L2)
+  vmprint_walk(pagetable, 2, 0);
 }
 #endif
 
@@ -212,32 +321,125 @@ uvmcreate()
 // Remove npages of mappings starting from va. va must be
 // page-aligned. It's OK if the mappings don't exist.
 // Optionally free the physical memory.
+// Remove npages of mappings starting from va. va must be
+// page-aligned. The mappings must exist.
+// Optionally free the physical memory.
+//
+// This is the SUPERPAGE-AWARE uvmunmap with demotion.
+// Remove npages of mappings starting from va. va must be
+// page-aligned. The mappings must exist.
+// Optionally free the physical memory.
+//
+// This is the SUPERPAGE-AWARE uvmunmap with demotion.
 void
 uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 {
   uint64 a;
   pte_t *pte;
-  int sz = PGSIZE;
 
   if((va % PGSIZE) != 0)
     panic("uvmunmap: not aligned");
 
-  for(a = va; a < va + npages*PGSIZE; a += sz){
-    if((pte = walk(pagetable, a, 0)) == 0) // leaf page table entry allocated?
+  for(a = va; a < va + npages*PGSIZE; ){
+    pte_t *l2pte = &pagetable[PX(2, a)];
+    
+    if((*l2pte & PTE_V) == 0) {
+      // L2 PTE not valid, skip to the next 2MB boundary (was GIGAPGSIZE)
+      a = (a + MEGAPGSIZE) & ~(MEGAPGSIZE - 1); // <--- FIX 1
       continue;
-    if((*pte & PTE_V) == 0)  // has physical page been allocated?
+    }
+    
+    if(PTE_LEAF(*l2pte)) {
+      panic("uvmunmap: 1G pages not supported");
+    }
+
+    pagetable_t l1table = (pagetable_t)PTE2PA(*l2pte);
+    pte_t *l1pte = &l1table[PX(1, a)];
+
+    if((*l1pte & PTE_V) == 0) {
+      // L1 PTE not valid, skip 2M
+      a = (a + MEGAPGSIZE) & ~(MEGAPGSIZE - 1);
       continue;
-    sz = PGSIZE;
+    }
+    
+    if(PTE_LEAF(*l1pte)) {
+      // This is a 2M superpage.
+      uint64 super_va = a & ~(MEGAPGSIZE - 1);
+      // uint64 pages_in_super = MEGAPGSIZE / PGSIZE; // <--- FIX 2: Removed unused variable
+      uint64 unmap_end = va + npages*PGSIZE;
+
+      // Check if we are unmapping the *entire* superpage
+      if ( (a == super_va) && (unmap_end >= (super_va + MEGAPGSIZE)) ) {
+        // Yes, free the whole thing
+        if(do_free){
+          uint64 pa = PTE2PA(*l1pte);
+          superfree((void*)pa);
+        }
+        *l1pte = 0; // Clear the PTE
+        a += MEGAPGSIZE;
+        continue;
+      } else {
+        // NO, we are unmapping a *part* of it. We must demote.
+        
+        // 1. Get superpage PA and permissions
+        uint64 spa = PTE2PA(*l1pte);
+        int perm = PTE_FLAGS(*l1pte);
+
+        // 2. Allocate new L0 table
+        pagetable_t l0table = (pagetable_t)kalloc();
+        if(l0table == 0)
+          panic("uvmunmap: demote kalloc failed");
+        memset(l0table, 0, PGSIZE);
+
+        // 3. Allocate 512 4K pages, copy data, map them in L0
+        for (int i = 0; i < 512; i++) {
+          char *page = kalloc();
+          if(page == 0)
+            panic("uvmunmap: demote kalloc failed");
+          memmove(page, (void*)(spa + i*PGSIZE), PGSIZE);
+          l0table[i] = PA2PTE((uint64)page) | perm | PTE_V;
+        }
+        
+        // 4. Install new L0 table (make L1 PTE a pointer, not a leaf)
+        *l1pte = PA2PTE(l0table) | PTE_V;
+
+        // 5. Free the original 2MB superpage
+        if(do_free) {
+          superfree((void*)spa);
+        }
+
+        // 6. DO NOT continue. Fall through to the 4KB-page-freeing logic
+        // which will now run on the page we *just* created.
+      }
+    }
+    
+// Not a superpage OR demoted, so it must be a 4K page.
+    pte = walk(pagetable, a, 0);
+    
+    if(pte == 0) {
+        // This shouldn't happen given our L1/L2 checks, but be safe.
+        a += PGSIZE;
+        continue;
+    }
+
+    if((*pte & PTE_V) == 0) {
+        // Page is not mapped. This is normal, not an error.
+        // Just skip it and advance to the next page.
+        a += PGSIZE;
+        continue;
+    }
+
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
+    
     if(do_free){
       uint64 pa = PTE2PA(*pte);
       kfree((void*)pa);
     }
-    *pte = 0;
+    *pte = 0; // Clear the PTE
+    a += PGSIZE;
   }
 }
-
 
 // Allocate PTEs and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
@@ -326,36 +528,96 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
+// Given a parent process's page table, copy
+// its memory into a child's page table.
+// Copies both the page table and the
+// physical memory.
+// returns 0 on success, -1 on failure.
+// frees any allocated pages on failure.
+//
+// This is the SUPERPAGE-AWARE uvmcopy.
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
-  pte_t *pte;
+  pte_t *pte, *l1pte;
   uint64 pa, i;
   uint flags;
   char *mem;
-  int szinc = PGSIZE;
 
-  for(i = 0; i < sz; i += szinc){
-    if((pte = walk(old, i, 0)) == 0)
-      continue;
-    if((*pte & PTE_V) == 0) {
+  for(i = 0; i < sz;){
+    // Check for 2MB superpage first
+    pte_t *l2pte = &old[PX(2, i)];
+    if((*l2pte & PTE_V) != 0) {
+      pagetable_t l1table = (pagetable_t)PTE2PA(*l2pte);
+      l1pte = &l1table[PX(1, i)];
+
+      // Is it a 2MB superpage? (L1 leaf)
+      if((*l1pte & PTE_V) != 0 && (*l1pte & (PTE_R|PTE_W|PTE_X)) != 0) {
+        pa = PTE2PA(*l1pte);
+        flags = PTE_FLAGS(*l1pte);
+
+        // Check if the entire 2MB page is within the process size
+        if (i + MEGAPGSIZE <= sz) {
+          // Try to allocate a 2MB page
+          mem = superalloc();
+          if(mem != 0) {
+            // superalloc SUCCEEDED
+            memmove(mem, (char*)pa, MEGAPGSIZE);
+            if(mappages_super(new, i, MEGAPGSIZE, (uint64)mem, flags) != 0){
+              superfree(mem);
+              goto err;
+            }
+            i += MEGAPGSIZE; // Advance by 2MB
+            continue; // Go to next loop iteration
+          }
+          // superalloc FAILED.
+          // Fall through to the 4KB copy path below.
+        }
+        // If not fully within sz, fall through to 4KB copy path
+      }
+    }
+
+    // Fallback: 4KB page copy
+    if((pte = walk(old, i, 0)) == 0) {
+      // Page isn't mapped, skip it
+      i += PGSIZE;
       continue;
     }
-    szinc = PGSIZE;
-    pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    if((*pte & PTE_V) == 0) {
+      // Page isn't valid, skip it
+      i += PGSIZE;
+      continue;
+    }
+
+    // --- THE FIX ---
+    // We cannot just use PTE2PA(*pte), as 'pte' might be an L1
+    // superpage entry. walkaddr() will find the *correct*
+    // physical address for the 4KB page at virtual address 'i'.
+    pa = walkaddr(old, i);
+    if(pa == 0) {
+      // Should be impossible if walk succeeded, but good to check
+      i += PGSIZE;
+      continue;
+    }
+    // --- END FIX ---
+
+    flags = PTE_FLAGS(*pte); // Flags are the same for the whole page/superpage
+    if((mem = kalloc()) == 0) // Allocate 4KB page
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);
+
+    // 'pa' now points to the correct 4KB block of physical memory
+    memmove(mem, (char*)pa, PGSIZE); // Copy 4KB
+
     if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
       kfree(mem);
       goto err;
     }
+    i += PGSIZE; // Advance by 4KB
   }
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  uvmunmap(new, 0, PGROUNDUP(i)/PGSIZE, 1);
   return -1;
 }
 
@@ -537,3 +799,59 @@ pgpte(pagetable_t pagetable, uint64 va) {
   return walk(pagetable, va, 0);
 }
 #endif
+
+// In kernel/vm.c
+
+// Create a 2MB superpage mapping at L1.
+// va and pa must be 2MB-aligned.
+// size must be MEGAPGSIZE.
+// perm is the PTE_R, PTE_W, PTE_X, PTE_U bits.
+// Returns 0 on success, -1 on failure.
+int
+mappages_super(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
+{
+  pte_t *l2pte;
+  pagetable_t l1table;
+
+  if (size != MEGAPGSIZE)
+    panic("mappages_super: size not MEGAPGSIZE");
+  if (va % MEGAPGSIZE != 0)
+    panic("mappages_super: va not aligned");
+  if (pa % MEGAPGSIZE != 0)
+    panic("mappages_super: pa not aligned");
+
+  // Get the L2 PTE for this virtual address
+  l2pte = &pagetable[PX(2, va)];
+
+  // Get the L1 page table
+  if (*l2pte & PTE_V) {
+    // L1 table already exists
+    l1table = (pagetable_t)PTE2PA(*l2pte);
+  } else {
+    // L1 table does not exist, allocate one
+    l1table = (pagetable_t)kalloc();
+    if (l1table == 0)
+      return -1;
+    memset(l1table, 0, PGSIZE);
+    // Make the L2 PTE point to the new L1 table
+    *l2pte = PA2PTE(l1table) | PTE_V;
+  }
+
+  // Get the L1 PTE
+  pte_t *l1pte = &l1table[PX(1, va)];
+
+  // This L1 entry should not already be in use
+  if (*l1pte & PTE_V) {
+    // If it is, something is wrong. We are "re-mapping" a page.
+    // In a real OS, we might free the old page. For this lab,
+    // it indicates a logic error in how we call this function.
+    panic("mappages_super: remap");
+  }
+  
+  // Install the superpage leaf entry.
+  // This PTE points directly to the 2MB physical page.
+  // The hardware knows it's a leaf because PTE_R/W/X bits are set.
+  *l1pte = PA2PTE(pa) | perm | PTE_V;
+
+  return 0;
+}
