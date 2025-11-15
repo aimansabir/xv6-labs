@@ -1,9 +1,10 @@
-// Shell.
+// Improved xv6 shell: adds history, wait, background jobs, and suppresses prompt if not interactive.
 
 #include "kernel/types.h"
 #include "user/user.h"
 #include "kernel/fcntl.h"
-
+#include "kernel/stat.h"
+#include "kernel/fs.h"
 // Parsed command representation
 #define EXEC  1
 #define REDIR 2
@@ -12,6 +13,16 @@
 #define BACK  5
 
 #define MAXARGS 10
+#define T_DEV 3
+#define BACKSPACE 0x100
+
+#define TAB '\t'        // Your code was 0x9, which is \t
+
+#define MAX_HISTORY 16
+#define MAX_CMD_LEN 100
+
+static char history[MAX_HISTORY][MAX_CMD_LEN];
+static int history_count = 0;
 
 struct cmd {
   int type;
@@ -79,7 +90,7 @@ runcmd(struct cmd *cmd)
     exec(ecmd->argv[0], ecmd->argv);
     fprintf(2, "exec %s failed\n", ecmd->argv[0]);
     break;
-
+#define ESC 0x1B    // The Up Arrow starts with ESC
   case REDIR:
     rcmd = (struct redircmd*)cmd;
     close(rcmd->fd);
@@ -131,16 +142,68 @@ runcmd(struct cmd *cmd)
   exit(0);
 }
 
+// In user/sh.c, find the getcmd() function
+
 int
 getcmd(char *buf, int nbuf)
 {
-  write(2, "$ ", 2);
+  // --- Prompt Suppression Logic (Unchanged) ---
+  struct stat st;
+  int tc = T_DEV;
+  fstat(0, &st);
+  if(st.type == tc){
+    fprintf(2, "$ ");
+  }
+  // --- End Prompt Suppression ---
+
+  int i;
+  char c;
   memset(buf, 0, nbuf);
-  gets(buf, nbuf);
-  if(buf[0] == 0) // EOF
-    return -1;
-  return 0;
+  for(i=0; i<nbuf; i++){
+    if(read(0, &c, 1) < 1)
+      break;
+
+    // On ENTER
+    if(c == '\n' || c == '\r'){
+      if(buf[0] != 0) { 
+        // FIX: Added code to ensure history is only saved if command is non-empty
+        // Note: The logic for history count is placed here to minimize changes
+        strcpy(history[history_count % MAX_HISTORY], buf);
+        history_count++;
+      }
+      buf[i] = 0;
+      return 0; // Success
+    } 
+    
+    // On BACKSPACE
+    else if(c == BACKSPACE){
+      if(i > 0){ i = i - 2; fprintf(2, "\b \b"); } 
+      else { i = i - 1; }
+    }
+
+    // --- On TAB (Preserving the existing tricky logic) ---
+    else if(c == TAB) {
+      if(buf[0] == 'u' && buf[1] == 'p' && i == 2) {
+        // We matched "up"
+        strcpy(buf, "uptime");
+        fprintf(2, "time "); // Print the part we added
+        i = strlen(buf); // Set new buffer position
+      }
+      
+      // IMPORTANT: We must "eat" the tab character.
+      // We decrement 'i' to cancel out the for-loop's i++.
+      i--; 
+    }
+    // --- END TAB ---
+
+    // Regular Character
+    else {
+      buf[i] = c;
+    }
+  }
+  return -1; // EOF
 }
+
 
 int
 main(void)
@@ -159,19 +222,65 @@ main(void)
   // Read and run input commands.
   while(getcmd(buf, sizeof(buf)) >= 0){
     char *cmd = buf;
+    
+    // Skip leading whitespace
     while (*cmd == ' ' || *cmd == '\t')
       cmd++;
-    if (*cmd == '\n') // is a blank command
+    
+    // Check for blank or empty command
+    if (*cmd == 0) 
       continue;
+    
+    // Handle 'cd' built-in
     if(cmd[0] == 'c' && cmd[1] == 'd' && cmd[2] == ' '){
-      // Chdir must be called by the parent, not the child.
-      cmd[strlen(cmd)-1] = 0;  // chop \n
+      // FIX: Added strlen check for safety
+      if (strlen(cmd) > 3) cmd[strlen(cmd)-1] = 0; // chop \n
       if(chdir(cmd+3) < 0)
         fprintf(2, "cannot cd %s\n", cmd+3);
-    } else {
-      if(fork1() == 0)
-        runcmd(parsecmd(cmd));
-      wait(0);
+      continue; // Go back to top of while loop
+    } 
+
+    // Handle 'exit' built-in
+    if(cmd[0] == 'e' && cmd[1] == 'x' && cmd[2] == 'i' && cmd[3] == 't'){
+      exit(0);
+    }
+
+    // Handle 'history' built-in (Existing Code)
+    if(strcmp(cmd, "history") == 0) {
+      // Figure out where to start printing
+      int start = history_count > MAX_HISTORY ? history_count - MAX_HISTORY : 0;
+      
+      // Loop from the start index to the current command count
+      for (int i = start; i < history_count; i++) {
+        // Print the line number and the command
+        fprintf(2, "%d: %s\n", i, history[i % MAX_HISTORY]);
+      }
+      continue; // Done, skip the fork/exec and get next command
+    }
+
+    // --- WAIT BUILT-IN IMPLEMENTATION (NEW) ---
+    if(strcmp(cmd, "wait") == 0) {
+      // Loop until there are no more children to wait for (wait returns -1)
+      while(wait(0) > 0) { }
+      continue; // Done, skip the fork/exec and get next command
+    }
+    // --- END WAIT IMPLEMENTATION ---
+
+    // Check for background job BEFORE parsing
+    int len = strlen(cmd);
+    int bg = 0;
+    if (len > 0 && cmd[len - 1] == '&') {
+        bg = 1;
+        cmd[len - 1] = 0; // Null-terminate before '&'
+    }
+
+    // Fork and run all other commands
+    if(fork1() == 0)
+      runcmd(parsecmd(cmd));
+    
+    // Parent waits only if it's not a background job
+    if(bg == 0) {
+        wait(0);
     }
   }
   exit(0);
@@ -196,7 +305,7 @@ fork1(void)
 }
 
 //PAGEBREAK!
-// Constructors
+// Constructors (Standard)
 
 struct cmd*
 execcmd(void)
@@ -263,7 +372,7 @@ backcmd(struct cmd *subcmd)
   return (struct cmd*)cmd;
 }
 //PAGEBREAK!
-// Parsing
+// Parsing (Standard)
 
 char whitespace[] = " \t\r\n\v";
 char symbols[] = "<|>&;()";

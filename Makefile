@@ -195,15 +195,17 @@ UPROGS=\
 	$U/_logstress\
 	$U/_forphan\
 	$U/_dorphan\
+	$U/_find\
 	$U/_sleep\
 	$U/_sixfive\
-	$U/_memdump
-
-
+	$U/_memdump\
+	$U/_uptime
 ifeq ($(LAB),syscall)
 UPROGS += \
 	$U/_attack\
+
 	$U/_secret
+
 endif
 
 ifeq ($(LAB),lock)
@@ -397,3 +399,4 @@ check-qemu-version:
 		echo "ERROR: Need qemu version >= $(MIN_QEMU_VERSION)"; \
 		exit 1; \
 	fi
+
