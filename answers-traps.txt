@@ -1,0 +1,25 @@
+
+1. Function arguments are passed in registers a0–a7. In main’s call to printf, the value 13 is in register a2.
+
+2. There is no call instruction to f or g in main’s assembly. The compiler has inlined and optimized them away:
+   - g(x) is inlined into f(x) as “x + 3”.
+   - f(8) + 1 is constant-folded to 12, so main just loads 12 into a1 and never calls f or g.
+
+3. The function printf is located at address 0x00000000000006ea.
+
+4. Just after the jal to printf in main, ra contains the address of the next instruction, which is 0x0000000000000034.
+
+5. For:
+   unsigned int i = 0x00646c72;
+   printf("H%x Wo%s", 57616, (char *) &i);
+   The output is:
+   He110 World
+
+6. On a big-endian RISC-V, to get the same output, i must be:
+   unsigned int i = 0x726c6400;
+   The value 57616 does not need to change.
+
+7. For:
+   printf("x=%d y=%d", 3);
+   The value printed after y= is an unpredictable garbage integer. There are two %d format specifiers but only one integer argument, so printf reads an unspecified value for the second %d (undefined behavior).
+
