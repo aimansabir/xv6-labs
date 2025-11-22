@@ -139,9 +139,35 @@ panic(char *s)
   panicking = 1;
   printf("panic: ");
   printf("%s\n", s);
+
+  backtrace();
+
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;
+}
+
+void
+backtrace(void)
+{
+  uint64 fp = r_fp();
+  uint64 stackpage = PGROUNDDOWN(fp);
+
+  printf("backtrace:\n");
+
+  // Walk stack frames while we stay within the same stack page.
+  while (fp != 0 && PGROUNDDOWN(fp) == stackpage) {
+    // The calling convention saves ra at fp-8 and previous fp at fp-16.
+    uint64 ra = *(uint64 *)(fp - 8);
+    uint64 prev_fp = *(uint64 *)(fp - 16);
+
+    printf("%p\n", (void *)ra);
+
+    if (prev_fp == 0)
+      break;
+
+    fp = prev_fp;
+  }
 }
 
 void
