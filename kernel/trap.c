@@ -81,9 +81,27 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
+  if(which_dev == 2){
+    // timer interrupt: handle per-process alarms
+    if(p->alarm_interval > 0){
+      if(!p->handling_alarm){
+        if(--p->alarm_ticks_left <= 0){
+          // Save current user context
+          p->alarm_tf = *p->trapframe;
 
+          // Arrange to run handler in user space
+          p->trapframe->epc = p->alarm_handler;
+
+          // Mark that we are in the handler and re-arm the alarm
+          p->handling_alarm   = 1;
+          p->alarm_ticks_left = p->alarm_interval;
+        }
+      }
+    }
+
+    // existing behavior: yield on timer tick
+    yield();
+  }
   prepare_return();
 
   // the user page table to switch to, for trampoline.S

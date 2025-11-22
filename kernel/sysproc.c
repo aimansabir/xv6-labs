@@ -106,3 +106,48 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_sigalarm(void)
+{
+  int ticks;
+  uint64 handler;
+  struct proc *p = myproc();
+
+  // In this xv6 version, argint/argaddr return void.
+  argint(0, &ticks);
+  argaddr(1, &handler);
+
+  // Only sigalarm(0, 0) should disable the alarm.
+  if (ticks == 0 && handler == 0) {
+    p->alarm_interval   = 0;
+    p->alarm_ticks_left = 0;
+    p->alarm_handler    = 0;
+    p->handling_alarm   = 0;
+  } else {
+    p->alarm_interval   = ticks;
+    p->alarm_ticks_left = ticks;
+    p->alarm_handler    = handler;
+    p->handling_alarm   = 0;
+  }
+
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+
+  // Save original a0 so syscall return value matches user state.
+  uint64 old_a0 = p->alarm_tf.a0;
+
+  // Restore saved trapframe (registers, epc, etc.).
+  memmove(p->trapframe, &p->alarm_tf, sizeof(struct trapframe));
+
+  p->handling_alarm = 0;
+
+  // syscall() will copy this return into a0.
+  return old_a0;
+}
+
